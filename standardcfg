@@ -1,0 +1,575 @@
+#!/bin/bash
+STANDARD_CFG_DEBUG_FILE1=/daten/system/bin/standardcfg.log
+[ "$STANDARD_CFG_DEBUG" != false -a -f "$STANDARD_CFG_DEBUG_FILE1" ] && STANDARD_CFG_DEBUG=true || STANDARD_CFG_DEBUG=false
+STANDARD_CFG_DEBUG=false #########
+
+#STANDARD_CFG_EVENT_DIR=/daten/system/bin/events
+STANDARD_CFG_EVENT_DIR="" # leave this empty to point to `standardcfg -d`/events
+STANDARD_CFG_LIB_TMP_DIR="/tmp"
+
+####################################################################################################################################
+# V. 10.02.2019 - added STANDARD_CFG_SINGLETON
+# V. 07.12.2017 - added STANDARD_CFG_FORCE_OPEN_TERMINAL and STANDARD_CFG_TERMINAL_OPENED
+# V. 05.09.2017 - running_in_terminal returns 0 or 1
+# V. 11.01.2017 - added ascii_to_percent_char()
+# V. 01.09.2016 - added *_all version of get_index, get_index_source_output and get_status
+# V. 14.08.2016 - moved -a and +a into if so --make-static works again
+# V. 06.05.2016 - added set -a and set +a to let functions used with xargs have access to this script
+# V. 04.05.2016 - handle arguments allows to use '=' for assigning variables now
+# V. 23.04.2016 - added normalize_unicode() http://stackoverflow.com/questions/36425326/string-normalization-in-pure-bash
+# V. 16.04.2016 - corrected static-maker & added xcfe4-terminal
+# V. 10.04.2016 - added -s option: generate a standalone version of the scripts which are given as parameters
+# V. 19.09.2015 - added -d option + STANDARD_CFG_EVENT_DIR now defaults to `standardcfg -d`/events if its empty + `"standardcfg"` is now really reliable (w/o parameters) + use of more here-strings + characters of progressbar can now be changed
+# V. 14.09.2015 - reworked progress_bar + added progress_bar_extended
+# V. 06.09.2015 - corrected wall()
+# V. 01.09.2015 - STANDARD_CFG_EVENT_HANDLER_BLOCK now allows blocking all events of a program at once
+# V. 31.08.2015 - added echoerr, wait_get_index and STANDARD_CFG_EVENT_HANDLER_BLOCK
+# V. 23.08.2015 - fgcolour & bgcolour accept numbers + STANDARD_CFG_HANDLE_ARGUMENTS + STANDARD_CFG_HANDLE_HELP
+# V. 08.08.2015 - added SAFESED (same as SAFE without replacing brackets() )
+# V. 27.04.2015 - get_index and get_status (sound extension) got $1 and $2 *breaking backwards compatibility*
+# V. 11.04.2015 - added urxvt-terminal
+# V. 18.10.2014 - added event handler for programs wanting to broadcast them
+# V. 04.10.2014 - help menu
+# V. 22.09.2014 - preventing execution of standardcfg itself, but can be used now with `standardcfg` if its in $PATH
+# V. 20.09.2014 - Sound extension + debug option to see which programs are using this lib
+# V. 17.08.2014
+# V. 24.08.2013
+
+# extension for every other shell scripts, these can start as following (great combo):
+
+# STANDARD_CFG_SINGLETON=true
+# STANDARD_CFG_MINIMAL=true
+# . /daten/system/bin/standardcfg or `standardcfg` if available in $PATH or . "`standardcfg -p`"
+# STANDARD_CFG_ARGUMENTS_NEEDED=true
+# STANDARD_CFG_ARGUMENTS_STRING="`ls -1 | tail -1`"
+# STANDARD_CFG_SOUND_EXTENSION=true
+# . /daten/system/bin/standardcfg or `standardcfg` if available in $PATH
+# if [ "$STANDARD_CFG_TERMINAL_OPENED" == true ]; then ...
+
+# included options: () contains default option
+# STANDARD_CFG_SINGLETON = allow only one process of script
+# STANDARD_CFG_MINIMAL = only change dir to the dir where the script is, save directory before to $dirprog (false, changes automatically to true after first "exec")
+#	STANDARD_CFG_EXTRA_FUNCTIONS = create some great functions (true)
+#	STANDARD_CFG_SOUND_EXTENSION = create some sound-per-app volume control functions (false)
+#	STANDARD_CFG_OPEN_TERMINAL = opens terminal and starts script again with last parameters (true)
+#		STANDARD_CFG_FORCE_OPEN_TERMINAL = if STANDARD_CFG_OPEN_TERMINAL != false and STANDARD_CFG_FORCE_OPEN_TERMINAL == true, then open terminal (regardless of running_in_terminal)
+#		STANDARD_CFG_ARGUMENTS_NEEDED = when arguments are needed but script was started without terminal user is able to enter parameters (false)
+#			STANDARD_CFG_ARGUMENTS_STRING = standard parameters ("")
+#			STANDARD_CFG_GET_ARGUMENTS() = method for getting parameters from user !FUNCTION!
+#		STANDARD_CFG_TERMINAL_OPENED = programs can recognize with this variable if another terminal has been opened
+#	STANDARD_CFG_HANDLE_ARGUMENTS = let standardcfg handle parameters to change values, i.e. --abc-def X --> ABC_DEF=X (false)
+#		STANDARD_CFG_HANDLE_HELP = let standardcfg show available options when calling --help or -h (true)
+
+
+STANDARD_CFG_LIB_NAME="standardcfg"
+STANDARD_CFG_LIB_VERSION="2019-02-10"
+STANDARD_CFG_LIB_AUTHOR="Mitski Piekenbrock"
+STANDARD_CFG_LIB_AUTHOR_EMAIL="mitski.piekenbrock@rwth-aachen.de"
+
+prog="${0##*/}"
+progdir="${0%/"$prog"}"
+[ "$workingdir" ] || workingdir="`pwd`"
+cd "$progdir" || exit 1
+dirprog="$(pwd)/$prog"
+
+
+
+# if standardcfg is not started as a library, but as a standard program
+if [ "$prog" == "$STANDARD_CFG_LIB_NAME" -a "`ls "$prog"`" -a -z "$STANDARD_CFG_LIB_STATICMAKER" ]; then
+	if [ -z "$1" ]; then
+		#echo ". $dirprog"
+		echo "eval source \"$dirprog\""
+	elif [ "$1" == "-p" ]; then
+		echo "$dirprog"
+	elif [ "$1" == "-d" ]; then
+		echo "$progdir"
+	elif [ "$1" == "-l" -o "$1" == "-ll" ]; then
+		if [ -f "$STANDARD_CFG_DEBUG_FILE1" ]; then
+			[ "$1" == "-l" ] && echo "Scripts depending on this lib:"
+			[ "$1" == "-l" ] && echo
+			[ "$1" == "-l" ] && grep "^#" "$STANDARD_CFG_DEBUG_FILE1" | sed -e 's/^# ....................//' | cut -d' ' -f1 | sort -u
+			[ "$1" == "-ll" ] && cat "$STANDARD_CFG_DEBUG_FILE1"
+		else
+			if [ "$STANDARD_CFG_DEBUG" != false ]; then
+				echo "Set $\STANDARD_CFG_DEBUG to true to enable logging!"
+			else
+				echo "No log file found! Create a new file and set \$STANDARD_CFG_DEBUG_FILE1 to the new file (second line of $STANDARD_CFG_LIB_NAME)"
+			fi
+		fi
+	elif [ "$1" == "--make-static" -o "$1" == "-s" ]; then
+		shift
+		[ $# == 0 ] && { echo "Expecting scrpts as parameters to make them static"; exit; }
+		for f in "$@"; do
+			cd "$workingdir"
+			grep "$STANDARD_CFG_LIB_NAME" "$f" &>/dev/null || { echo "$f does NOT depend on this library, skipping"; continue; }
+			o="$f.static"
+			while IFS='' read -r line; do
+				if [ -z "$STANDARD_CFG_MINIMAL" ] && grep "$STANDARD_CFG_LIB_NAME" <<< "$line" &>/dev/null; then
+					STANDARD_CFG_LIB_STATICMAKER=true
+					STANDARD_CFG_MINIMAL=true
+					eval "$line" &>/dev/null
+					if [ "$STANDARD_CFG_MINIMAL" == false ]; then
+						cd "$workingdir"
+						STANDARD_CFG_MINIMAL=''
+						echo
+						echo "#####"
+						echo "##### START of $STANDARD_CFG_LIB_NAME v.$STANDARD_CFG_LIB_VERSION-STATIC by $STANDARD_CFG_LIB_AUTHOR <$STANDARD_CFG_LIB_AUTHOR_EMAIL> #####"
+						echo "#####"
+						echo "# Beware that this is the automatically generated static version of $STANDARD_CFG_LIB_NAME. It probably contains a lot of redundant code for the actual script containing this library-part. The static version differs from the dynamic verison. Heavily."
+						grep -v '^\s*#' "$0" | grep -v '^\s*$' | sed -e 's/STANDARD_CFG_DEBUG=true/STANDARD_CFG_DEBUG=false/g' -e 's#^STANDARD_CFG_EVENT_DIR=.*#STANDARD_CFG_EVENT_DIR=/dev/null#'
+						echo "$STANDARD_CFG_LIB_NAME"'() { [ -z "$1" ] && echo "eval source /dev/null"; [ "$1" == "-p" ] && echo "/dev/null"; }'
+						echo "#####"
+						echo "##### END of $STANDARD_CFG_LIB_NAME #####"
+						echo "#####"
+						echo
+					elif [[ "$line" =~ "$dirprog" ]]; then
+						:
+					else
+						echo "$line"
+					fi
+				else
+					echo "$line"
+				fi
+			done < "$f" > "$o"
+			chmod +x "$o"
+			echo "Wrote static version of $f to $o"
+		done
+	else
+		echo "$STANDARD_CFG_LIB_NAME - v.$STANDARD_CFG_LIB_VERSION"
+		echo "(c) $STANDARD_CFG_LIB_AUTHOR <$STANDARD_CFG_LIB_AUTHOR_EMAIL>"
+		echo
+		echo "Options:"
+		echo "	none:	returns 'eval source \"$dirprog\"'"
+		echo "	-h	show this help"
+		echo "	-p	returns \"$dirprog\""
+		echo "	-d	returns \"$progdir\""
+		echo "	-l	show log (if any available)"
+		echo "	-ll	show log in detail (if any available)"
+		echo "	-s	generate standalone scripts"
+		echo
+		echo "log enabled: $STANDARD_CFG_DEBUG"
+		[ -f "$STANDARD_CFG_DEBUG_FILE1" ] && echo "log file: $STANDARD_CFG_DEBUG_FILE1" || echo "log file: not found"
+	fi
+	exit 0
+fi
+[ "$STANDARD_CFG_EVENT_DIR" ] || STANDARD_CFG_EVENT_DIR="`standardcfg -d`/events"
+
+
+# debugging
+if [ "$STANDARD_CFG_DEBUG" == true -a -f "$STANDARD_CFG_DEBUG_FILE1" ]; then
+	echo ""																			>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "# `date +%Y-%m-%d_%T` $dirprog $@"										>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_SINGLETON            = (f) $STANDARD_CFG_SINGLETON"			>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_MINIMAL              = (f) $STANDARD_CFG_MINIMAL"			>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_EXTRA_FUNCTIONS      = (t) $STANDARD_CFG_EXTRA_FUNCTIONS"	>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_SOUND_EXTENSION      = (f) $STANDARD_CFG_SOUND_EXTENSION"	>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_OPEN_TERMINAL        = (t) $STANDARD_CFG_OPEN_TERMINAL"		>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_FORCE_OPEN_TERMINAL  = (f) $STANDARD_CFG_FORCE_OPEN_TERMINAL">> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "STANDARD_CFG_TERMINAL_OPENED      = (f) $STANDARD_CFG_TERMINAL_OPENED"	>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo " STANDARD_CFG_ARGUMENTS_NEEDED    = (f) $STANDARD_CFG_ARGUMENTS_NEEDED"	>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "  STANDARD_CFG_ARGUMENTS_STRING   = ( ) $STANDARD_CFG_ARGUMENTS_STRING"	>> "$STANDARD_CFG_DEBUG_FILE1"
+	type STANDARD_CFG_GET_ARGUMENTS &>/dev/null
+	STANDARD_CFG_TMP=$?
+	echo "  STANDARD_CFG_GET_ARGUMENTS()    = (0) $((1-$STANDARD_CFG_TMP))"			>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo " STANDARD_CFG_HANDLE_ARGUMENTS    = (f) $STANDARD_CFG_HANDLE_ARGUMENTS"	>> "$STANDARD_CFG_DEBUG_FILE1"
+	echo "  STANDARD_CFG_HANDLE_HELP        = (t) $STANDARD_CFG_HANDLE_HELP"		>> "$STANDARD_CFG_DEBUG_FILE1"
+	[ "$STANDARD_CFG_TMP" == 0 ] && declare -f STANDARD_CFG_GET_ARGUMENTS | sed -e 's/^/|/' >> "$STANDARD_CFG_DEBUG_FILE1"
+	#echo "STANDARD_CFG_		= $STANDARD_CFG_"		>> "$STANDARD_CFG_DEBUG_FILE1"
+fi
+
+if [ "$STANDARD_CFG_SINGLETON" == true ]; then
+	STANDARD_CFG_SINGLETON_FILE="${STANDARD_CFG_LIB_TMP_DIR}/.${STANDARD_CFG_LIB_NAME}_SINGLETON_`md5sum <<< "$dirprog" | awk '{print $1}'`"
+	if [ -f "$STANDARD_CFG_SINGLETON_FILE" ]; then
+		kill -0 "`cat "$STANDARD_CFG_SINGLETON_FILE"`" 2>/dev/null && exit
+	fi
+	echo "$$" > "$STANDARD_CFG_SINGLETON_FILE"
+fi
+
+if [ "$STANDARD_CFG_MINIMAL" != true ]; then
+	set -a
+	if [ "$STANDARD_CFG_EXTRA_FUNCTIONS" != false ]; then
+		get_screen_size() {
+			local sc=1	# screen
+			[ "$1" ] && sc="$1"
+			SCREENXY="`xrandr | grep '*'  | awk '{print $1}'` | head -$sc | tail -1"
+			SCREENX="`cut -d'x' -f1 <<< "$SCREENXY"`"
+			SCREENY="`cut -d'x' -f2 <<< "$SCREENXY"`"
+		}
+		get_mouse_pos() {
+			STANDARDCFGTMPVARIABLE="`xdotool getmouselocation`"
+			MOUSEX="`cut -d' ' -f1 <<< "$STANDARDCFGTMPVARIABLE" | cut -d: -f2`"
+			MOUSEY="`cut -d' ' -f2 <<< "$STANDARDCFGTMPVARIABLE" | cut -d: -f2`"
+		}
+		set_cursor_pos() { # set pos of cursor: setcursorpos lines cols
+			[[ "$1" =~ ^[0-9]+$ ]] && [[ "$2" =~ ^[0-9]+$ ]] && echo -en "\033[$1;$2f"
+		}
+		get_cursor_pos() { # sets variables $CURPOSY and $CURPOSY
+			local CURPOS
+			#echo -en "\E[6n"
+			tput u7
+			read -sdR CURPOS
+			CURPOSY="`sed -e 's/^..\([0-9]*\);\([0-9]\)/\1/' <<< "$CURPOS"`"
+			CURPOSX="`sed -e 's/^..\([0-9]*\);\([0-9]\)/\2/' <<< "$CURPOS"`"
+		}
+		set_terminal_dimension() {
+			echo -en "\033[8;$2;$1t"
+			get_terminal_dimension
+		}
+		get_terminal_dimension() {
+			#echo "`tput lines`:`tput cols`"
+			TERMMAXX="`tput cols`"
+			TERMMAXY="`tput lines`"
+		}
+		STANDARD_CFG_PROGRESS_BAR_INDEX=1
+		progress_bar_extended() {
+			[[ $# -lt 2 ]] && return
+			if [ $# == 2 ]; then
+				get_terminal_dimension
+			else
+				local TERMMAXX="$3"
+			fi
+			if [ $TERMMAXX -ge 8 ]; then
+				string="`progress_bar "$1" "$2" "$(($TERMMAXX - 4))" "$4" "$5" "$6" "$7" "$8"`"
+				string="${string}`printf "%+4s" "$(($1*100/$2))%"`"
+			elif [ $TERMMAXX -ge 4 ]; then
+				string="`progress_bar_medium "$1" "$2" "$TERMMAXX"`"
+			else
+				string="`progress_bar_low`"
+			fi
+			echo "$string"
+		}
+		progress_bar() {
+			[[ $# -ge 3 ]] || return
+			local TERMMAXX="$3"
+			if [ $TERMMAXX -ge 5 ]; then
+				local TERMMAXX=$(($TERMMAXX - 3))
+				local prebar="$4"
+				local preslider="$5"
+				local slider="$6"
+				local afterslider="$7"
+				local afterbar="$8"
+				[ "$prebar"      ] || prebar='['
+				[ "$preslider"   ] || preslider='='
+				[ "$slider"      ] || slider='>'
+				[ "$afterslider" ] || afterslider=' '
+				[ "$afterbar"    ] || afterbar=']'
+
+				local string="$prebar"
+				local nl=$(($1*$TERMMAXX/$2))
+				#nr=$(( ($2-$1)*$TERMMAXX/$2 ))
+				local nr=$(( $TERMMAXX - $nl ))
+				local i
+				for((i=0;i<$nl;i++)); do
+					string="${string}$preslider"
+				done
+				if [ "$1" == 0 ]; then
+					string="${string}$afterslider"
+				elif [ "$1" == "$2" ]; then
+					string="${string}$preslider"
+				else
+					string="${string}$slider"
+				fi
+				for((i=0;i<$nr;i++)); do
+					string="${string}$afterslider"
+				done
+				string="${string}$afterbar"
+			elif [ $TERMMAXX -ge 4 ]; then
+				string="`progress_bar_medium "$1" "$2"`"
+			else
+				string="`progress_bar_low`"
+			fi
+			echo "$string"
+		}
+		progress_bar_medium() {
+			[[ $# != 3 ]] && return
+			local TERMMAXX="$3"
+			if [ $TERMMAXX -ge 4 ]; then
+				echo "$(($1*100/$2))%"
+			else
+				progress_bar_low
+			fi
+		}
+		progress_bar_low() {
+			local string
+			STANDARD_CFG_PROGRESS_BAR_INDEX=$((STANDARD_CFG_PROGRESS_BAR_INDEX+1))
+			[ $STANDARD_CFG_PROGRESS_BAR_INDEX -gt 8 ] && STANDARD_CFG_PROGRESS_BAR_INDEX=1
+			case $STANDARD_CFG_PROGRESS_BAR_INDEX in
+				[1-2]) string='\';;
+				[3-4]) string='|';;
+				[5-6]) string='/';;
+				[7-8]) string='-';;
+			esac
+			echo "$string"
+		}
+		fgcolour() { fgcolor "$@"; }
+		fgcolor() { # Schriftfarbe
+			case "$1" in
+				0 | [bB]lack) echo -en "\E[0;30m" ;;
+				1 | [rR]ed) echo -en "\E[0;31m" ;;
+				2 | [gG]reen) echo -en "\E[0;32m" ;;
+				3 | [yY]ellow) echo -en "\E[0;33m" ;;
+				4 | [bB]lue) echo -en "\E[0;34m" ;;
+				5 | [pP]urple) echo -en "\E[0;35m" ;;
+				6 | [cC]yan) echo -en "\E[0;36m" ;;
+				7 | [wW]hite) echo -en "\E[0;37m" ;;
+				8 | [bB]old) echo -en "\033[0;1m" ;;
+				9 | [uU]nderline) echo -en "\033[0;4m" ;;
+				-1 | [sS]top) tput sgr0 ;;
+				*) echo -en "$1";;
+			esac
+			shift
+			[ $# -gt 0 ] && fgcolor "$@" || true
+		}
+		bgcolour() { bgcolor "$@"; }
+		bgcolor() { # Hintergrundfarbe
+			case "$1" in
+				0 | [bB]lack) echo -en "\E[0;40m" ;;
+				1 | [rR]ed) echo -en "\E[0;41m" ;;
+				2 | [gG]reen) echo -en "\E[0;42m" ;;
+				3 | [yY]ellow) echo -en "\E[0;43m" ;;
+				4 | [bB]lue) echo -en "\E[0;44m" ;;
+				5 | [pP]urple) echo -en "\E[0;45m" ;;
+				6 | [cC]yan) echo -en "\E[0;46m" ;;
+				7 | [wW]hite) echo -en "\E[0;47m" ;;
+				8 | [bB]old) echo -en "\033[0;1m" ;;
+				9 | [uU]nderline) echo -en "\033[0;4m" ;;
+				-1 | [sS]top) tput sgr0 ;;
+				*) echo -en "$1";;
+			esac
+			shift
+			[ $# -gt 0 ] && bgcolor "$@" || true
+		}
+		percent_char_to_ascii() {
+			# http://stackoverflow.com/questions/5082149/replace-percent-escaped-characters-in-string-20-5b-with-bash
+			# awk -niord '{printf RT?$0chr("0x"substr(RT,2)):$0}' RS=%..
+			printf "%b\n" "${1//%/\\x}"
+		}
+		ascii_to_percent_char() {
+			# https://askubuntu.com/questions/199110/how-can-i-instruct-nautilus-to-pre-generate-thumbnails/201997
+			perl -MURI::file -ne 'print URI::file->new($_);' <<< "$1"
+		}
+		normalize_unicode() {
+			[ $# == 0 ] && uconv -x Any-NFC || uconv -x Any-NFC <<< "$@"
+		}
+	fi
+	if [ "$STANDARD_CFG_SOUND_EXTENSION" == true ]; then
+		mute()   { adjust_muteness "$1" "$2" 1 $3; }
+		unmute() { adjust_muteness "$1" "$2" 0 $3; }
+		adjust_muteness() {
+			# force function:
+			# waiting for the application to start as some players need a small amount of time until they start, but since
+			# other players use external programs e.g. smplayer --> mplayer2 a timeout is needed
+			local index=""
+			local count=30 # /10 seconds
+			local n=$((count - 1))
+			[ "$4" ] && local n=0 # retry if forced
+			[ $n == 0 ] && echo -n "waiting $count/10 seconds to (un)mute it ($2) "
+			while [ -z "$index" -a $n -lt $count ]; do
+				local index=$(get_index "$1" $2)
+				n=$((n + 1))
+				[ $n == $count ] || sleep 0.1
+				[ -n "$4" -a $n -le $count ] && echo -n "."
+				[ $n == $count -a -n "$4" -a -z "$index" ] && echo " still not running" && echo && pacmd list-sink-inputs | grep "application.process.id\|application.name" | cut -d'"' -f2 && echo
+			done
+			[ "$index" -a -n "$4" ] && echo " (un)muted! index: $index"
+			[ "$index" ] && pacmd set-sink-input-mute "$index" $3 >/dev/null
+			# outdated, unsecure
+			#	local index=$(get_index "application.process.id" $1)
+			#	n=$(($n + 1))
+			#	[ $n -lt 30 ] || return # stop retry after waiting 3sec, otherwise it could freeze the system (lack of memory)
+			#	([[ "$index" ]] && pacmd set-sink-input-mute "$index" $2 >/dev/null) || ([[ ! -z $3 ]] && sleep 0.1 && adjust_muteness $1 $2 $3) # retry if forced
+			#	n=0
+		}
+		get_index() {
+			#local pid="$2"   # $1:"application.process.id"
+			pacmd list-sink-inputs | awk -v entry="$1" -v pid="$2" '$1 == "index:" {idx = $2} $1 == entry && $3 == "\"" pid "\"" {print idx; exit}'
+		}
+		get_index_all() {
+			pacmd list-sink-inputs | awk -v entry="$1" -v pid="$2" '$1 == "index:" {idx = $2} $1 == entry && $3 == "\"" pid "\"" {print idx}'
+		}
+		get_index_source_output() {
+			#local pid="$2"   # $1:"application.process.id"
+			pacmd list-source-outputs | awk -v entry="$1" -v pid="$2" '$1 == "index:" {idx = $2} $1 == entry && $3 == "\"" pid "\"" {print idx; exit}'
+		}
+		get_index_source_output_all() {
+			pacmd list-source-outputs | awk -v entry="$1" -v pid="$2" '$1 == "index:" {idx = $2} $1 == entry && $3 == "\"" pid "\"" {print idx}'
+		}
+		get_status() {
+			pacmd list-sink-inputs | awk -v entry="$1" -v pid="$2" '$1 == "muted:" {idx = $2} $1 == entry && $3 == "\"" pid "\"" {print idx; exit}' 2>/dev/null
+		}
+		get_status_all() {
+			pacmd list-sink-inputs | awk -v entry="$1" -v pid="$2" '$1 == "muted:" {idx = $2} $1 == entry && $3 == "\"" pid "\"" {print idx}' 2>/dev/null
+		}
+		wait_get_index() {
+			idx="`get_index "$1" "$2"`"
+			while [ ! "$idx" ]; do
+				idx="`get_index "$1" "$2"`"
+			done
+			echo "$idx"
+			#while read -r line; do # it might happen that the new sink-input is created while the while loop is being defined, leading the function to wait until another sink-input is created
+			#	idx="`get_index "$1" "$2"`"
+			#	[ "$idx" ] && echo "$idx" && break
+			#done < <(stdbuf -o0 pactl subscribe | grep --line-buffered "^Event 'new' on sink-input #" | sed -u "s/^Event 'new' on sink-input #//")
+		}
+	fi
+	echoerr() { echo "$@" 1>&2; }
+	wall() {
+		#read -r out
+		who | grep "tty" | sed -e 's/^.*(//' -e 's/)$//' | sort -u | \
+		while read -r disp; do
+			DISPLAY="$disp" notify-send "$@"
+		done
+	}
+	running_in_terminal() {
+		[[ "$(tty)" == /* ]] && { echo true; true; } || { echo false; false; }
+	}
+	SAFE() {
+		#printf '%s\n' "$1" | sed 's/[[\.*^$(){}?+|/]/\\&/g'
+		sed 's/[[\.*^$(){}?+|/]/\\&/g' <<< "$1"
+	}
+	SAFESED() {
+		#printf '%s\n' "$1" | sed 's/[[\.*^${}?+|/]/\\&/g'
+		sed 's/[[\.*^${}?+|/]/\\&/g' <<< "$1"
+	}
+	if [ "$STANDARD_CFG_OPEN_TERMINAL" != false ] && [ `running_in_terminal` == false -o "$STANDARD_CFG_FORCE_OPEN_TERMINAL" == true ]; then
+		unset STANDARD_CFG_FORCE_OPEN_TERMINAL
+		if [ -f /usr/bin/mate-terminal ]; then
+			TERM="mate-terminal"
+			exec="-x"
+			title="--title"
+			working="--working-directory"
+		elif [ -f /usr/bin/gnome-terminal ]; then
+			TERM="gnome-terminal"
+			exec="-x"
+			title="--title"
+			working="--working-directory"
+		elif [ -f /usr/bin/konsole ]; then
+			TERM="konsole"
+			exec="-e"
+			title="--title"
+			working="--workdir"
+		elif [ -f /usr/bin/urxvt ]; then
+			TERM="urxvt"
+			exec="-e"
+			title="-title"
+			working="-cd"
+		elif [ -f /usr/bin/xfce4-terminal ]; then
+			TERM="xfce4-terminal"
+			exec="-x"
+			title="--title"
+			working="--working-directory"
+		elif [ -f /usr/bin/xterm ]; then
+			TERM="xterm"
+			exec="-e"
+			title="-T"
+			cd "$workingdir"
+			working=""
+			workingdir="-cu"
+		fi
+		#while [ $# -gt 0 ]; do
+		#	args="$args `echo "$1" | sed -e 's/^/"/' -e 's/$/"/'`"
+		#	#args="$args $1"
+		#	shift
+		#done
+		#args="`echo "$args" | sed -e 's/^ //'`"
+
+		[ "$STANDARD_CFG_SINGLETON" == true ] && [ -f "$STANDARD_CFG_SINGLETON_FILE" ] && rm "$STANDARD_CFG_SINGLETON_FILE"
+
+		export STANDARD_CFG_TERMINAL_OPENED=true
+		if [ $# == 0 -a "$STANDARD_CFG_ARGUMENTS_NEEDED" == true ]; then
+			if [ "`type -t STANDARD_CFG_GET_ARGUMENTS`" == "function" ]; then
+				#eval "$TERM $title "$prog" $working "$workingdir" $exec "$dirprog" `STANDARD_CFG_GET_ARGUMENTS`"
+				$TERM $title "$prog" $working "$workingdir" $exec "$dirprog" `STANDARD_CFG_GET_ARGUMENTS`
+			else
+				#zenity --info --text "$TERM $title "$prog" $working "$workingdir" $exec "$dirprog" PARAMETER"
+				#eval "$TERM $title "$prog" $working "$workingdir" $exec "$dirprog" `zenity --entry --title "$prog" --text "PARAMETERS:" --entry-text "$STANDARD_CFG_ARGUMENTS_STRING"`"
+				$TERM $title "$prog" $working "$workingdir" $exec "$dirprog" `zenity --entry --title "$prog" --text "PARAMETERS:" --entry-text "$STANDARD_CFG_ARGUMENTS_STRING"`
+			fi
+		else
+			$TERM $title "$prog" $working "$workingdir" $exec "$dirprog" "$@"
+		fi
+		exit $?
+	fi
+	if [ "$STANDARD_CFG_HANDLE_ARGUMENTS" == true ]; then
+		var=''
+		for i in "$@"; do
+			if [ "$var" != '' ]; then
+				eval "$var=$i"
+				#echo "changed $var to $i"
+				var=''
+				shift
+				continue
+			fi
+			while read -r param; do
+				var="$param"
+				param="`tr '[:upper:]' '[:lower:]' <<< "$param" | sed 's/_/-/g'`"
+				if [ "$i" == "--$param" ]; then
+					break
+				elif [[ "$i" =~ ^--"$param"= ]]; then
+					param="`sed 's/^[^=]*=//' <<< "$i"`"
+					eval "$var=$param"
+					var=''
+					shift
+					continue=true
+					break
+				else
+					var=''
+				fi
+			done < <(grep -m1 -B99999 '^#######' "$dirprog" | grep '^[A-Z_]*=' | cut -d'=' -f1)
+			[ "$continue" == true ] && continue=false && continue
+			[ "$var" ] && shift || break
+		done
+		if [ "$STANDARD_CFG_HANDLE_HELP" != false ]; then
+			if [ "$1" == --help -o "$1" == -h ]; then
+				echo "Available options:"
+				grep -m1 -B99999 '^#######' "$dirprog" | grep '^[A-Z_]*=' | cut -d'=' -f1 | tr '[:upper:]' '[:lower:]' | sed -e 's/_/-/g' -e 's/^/--/'
+				shift
+			fi
+		fi
+	fi
+	STANDARD_CFG_EVENT_HANDLER_BLOCKFILE=.block
+	STANDARD_CFG_EVENT_HANDLER_BLOCK() {
+		local prog="$1"
+		[ "$prog" ] || return 1
+		shift
+		local ev="$1"
+		# ev can be "", so that all events of $prog are blocked
+		shift
+		[ -d "$STANDARD_CFG_EVENT_DIR/$prog/$ev" ] || return 2
+		if [ "$1" == 1 ]; then
+			[ -f "$STANDARD_CFG_EVENT_DIR/$prog/$ev/$STANDARD_CFG_EVENT_HANDLER_BLOCKFILE" ] || touch "$STANDARD_CFG_EVENT_DIR/$prog/$ev/$STANDARD_CFG_EVENT_HANDLER_BLOCKFILE"
+		else
+			[ -f "$STANDARD_CFG_EVENT_DIR/$prog/$ev/$STANDARD_CFG_EVENT_HANDLER_BLOCKFILE" ] && rm "$STANDARD_CFG_EVENT_DIR/$prog/$ev/$STANDARD_CFG_EVENT_HANDLER_BLOCKFILE"
+		fi
+	}
+	STANDARD_CFG_EVENT_HANDLER() {
+		local ev="$1"
+		[ "$ev" ] || return 1
+		shift
+		[ -d "$STANDARD_CFG_EVENT_DIR/$prog/$ev" ] || return 2
+		[ -f "$STANDARD_CFG_EVENT_DIR/$prog/$STANDARD_CFG_EVENT_HANDLER_BLOCKFILE" ] && return 3
+		[ -f "$STANDARD_CFG_EVENT_DIR/$prog/$ev/$STANDARD_CFG_EVENT_HANDLER_BLOCKFILE" ] && return 4
+		for i in "$STANDARD_CFG_EVENT_DIR/$prog/$ev/"*; do
+			#notify-send "$i $1 $2 $3"
+			[ -x "$i" ] && "$i" "$@"
+		done
+	}
+	set +a
+fi
+STANDARD_CFG_MINIMAL=false
+
+
+# other useful functions
+#actwindow() {
+#	ID=$(xdotool getactivewindow)
+#}
+#windowsize() {
+#	winx=$(xwininfo -id $ID | grep "Width" | awk '{print $2}')
+#	winy=$(xwininfo -id $ID | grep "Height" | awk '{print $2}')
+#	winxy=${winx}x${winy}
+#}
+#windowposition() {
+#	x=$(xwininfo -id $ID | grep "Absolute upper-left X" | awk '{print $4}')
+#	y=$(xwininfo -id $ID | grep "Absolute upper-left Y" | awk '{print $4}')
+#	xy=${x}x${y}
+#}
